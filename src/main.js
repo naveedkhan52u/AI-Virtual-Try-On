@@ -1,10 +1,10 @@
 import "./style.css";
 
 const products = [
-  { id: 1, name: "Classic Black Blazer", category: "Jackets", price: "$89", tone: "#171717", accent: "#6b7280", icon: "blazer" },
-  { id: 2, name: "Relaxed White Shirt", category: "Shirts", price: "$49", tone: "#f7f7f2", accent: "#c9c7bf", icon: "shirt" },
-  { id: 3, name: "Minimal Beige Jacket", category: "Jackets", price: "$79", tone: "#c8a982", accent: "#8c7254", icon: "jacket" },
-  { id: 4, name: "Everyday Denim Jacket", category: "Denim", price: "$69", tone: "#4b6380", accent: "#263c56", icon: "denim" }
+  { id: 1, name: "Classic Black Blazer", category: "Jackets", price: "$89", tone: "#171717", accent: "#6b7280", icon: "blazer", apiCategory: "tops" },
+  { id: 2, name: "Relaxed White Shirt", category: "Shirts", price: "$49", tone: "#f7f7f2", accent: "#c9c7bf", icon: "shirt", apiCategory: "tops" },
+  { id: 3, name: "Minimal Beige Jacket", category: "Jackets", price: "$79", tone: "#c8a982", accent: "#8c7254", icon: "jacket", apiCategory: "tops" },
+  { id: 4, name: "Everyday Denim Jacket", category: "Denim", price: "$69", tone: "#4b6380", accent: "#263c56", icon: "denim", apiCategory: "tops" }
 ];
 
 let selectedProduct = products[0];
@@ -90,14 +90,14 @@ document.querySelector("#app").innerHTML = `
         </label>
         <div class="selected-line"><span>Selected</span><strong id="selectedName">${selectedProduct.name}</strong></div>
         <button class="try-btn" id="tryBtn" disabled>Virtual Try On <span>→</span></button>
-        <p class="demo-note">Prototype mode: the next step is connecting a real AI try-on model.</p>
+        <p class="demo-note">Powered by a third-party virtual try-on AI. Your API key stays on the server.</p>
       </div>
     </section>
 
     <section class="result-section hidden" id="resultSection">
       <div class="result-head"><div><p class="eyebrow">YOUR PREVIEW</p><h2>Virtual try-on result</h2></div><button id="resetBtn">Try another photo</button></div>
       <div class="result-card">
-        <div class="result-image" id="resultImage"><img id="userPreview" alt="Uploaded fashion preview"/><div class="garment-overlay" id="garmentOverlay"></div><span class="ai-badge">AI PREVIEW</span></div>
+        <div class="result-image" id="resultImage"><div class="result-loading hidden" id="resultLoading"><span class="spinner"></span><strong>Creating your virtual try-on...</strong><small>This usually takes a few seconds.</small></div><img id="userPreview" alt="AI virtual try-on result"/><span class="ai-badge">AI TRY-ON</span></div>
         <div class="result-details"><p class="eyebrow">SELECTED ITEM</p><h3 id="resultName"></h3><p id="resultCategory"></p><strong id="resultPrice"></strong><button class="buy-btn">View product <span>→</span></button></div>
       </div>
     </section>
@@ -137,19 +137,85 @@ document.querySelector("#photoInput").addEventListener("change", e => {
   reader.readAsDataURL(file);
 });
 
-document.querySelector("#tryBtn").addEventListener("click", () => {
+document.querySelector("#tryBtn").addEventListener("click", async () => {
   if (!uploadedImage) return;
-  document.querySelector("#userPreview").src = uploadedImage;
-  document.querySelector("#garmentOverlay").innerHTML = garmentSvg(selectedProduct);
+
+  const tryBtn = document.querySelector("#tryBtn");
+  const resultSection = document.querySelector("#resultSection");
+  const resultLoading = document.querySelector("#resultLoading");
+  const userPreview = document.querySelector("#userPreview");
+
+  tryBtn.disabled = true;
+  tryBtn.innerHTML = "Generating... <span>⏳</span>";
+  resultSection.classList.remove("hidden");
+  resultLoading.classList.remove("hidden");
+  userPreview.classList.add("hidden");
   document.querySelector("#resultName").textContent = selectedProduct.name;
   document.querySelector("#resultCategory").textContent = selectedProduct.category;
   document.querySelector("#resultPrice").textContent = selectedProduct.price;
-  document.querySelector("#resultSection").classList.remove("hidden");
-  document.querySelector("#resultSection").scrollIntoView({ behavior: "smooth", block: "start" });
+  resultSection.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  try {
+    const garmentImage = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(garmentSvg(selectedProduct));
+
+    const startResponse = await fetch("/api/virtual-try-on", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        modelImage: uploadedImage,
+        garmentImage,
+        category: selectedProduct.apiCategory || "auto"
+      })
+    });
+
+    const startData = await startResponse.json();
+
+    if (!startResponse.ok || !startData.id) {
+      throw new Error(startData.error || "Unable to start the virtual try-on.");
+    }
+
+    let result = null;
+
+    for (let attempt = 0; attempt < 30; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      const statusResponse = await fetch("/api/virtual-try-on?id=" + encodeURIComponent(startData.id));
+      const statusData = await statusResponse.json();
+
+      if (!statusResponse.ok) {
+        throw new Error(statusData.error || "Unable to check the try-on status.");
+      }
+
+      if (statusData.status === "completed" && statusData.image) {
+        result = statusData.image;
+        break;
+      }
+
+      if (["failed", "canceled", "cancelled"].includes(statusData.status)) {
+        throw new Error(statusData.error || "The AI try-on could not be completed.");
+      }
+    }
+
+    if (!result) {
+      throw new Error("The AI try-on is taking too long. Please try again.");
+    }
+
+    userPreview.src = result;
+    userPreview.classList.remove("hidden");
+    resultLoading.classList.add("hidden");
+  } catch (error) {
+    resultLoading.innerHTML = "<strong>Try-on failed</strong><small>" + error.message + "</small>";
+  } finally {
+    tryBtn.disabled = false;
+    tryBtn.innerHTML = "Virtual Try On <span>→</span>";
+  }
 });
 
 document.querySelector("#resetBtn").addEventListener("click", () => {
   document.querySelector("#resultSection").classList.add("hidden");
+  document.querySelector("#resultLoading").classList.add("hidden");
+  document.querySelector("#resultLoading").innerHTML = "<span class=\"spinner\"></span><strong>Creating your virtual try-on...</strong><small>This usually takes a few seconds.</small>";
+  document.querySelector("#userPreview").classList.add("hidden");
   document.querySelector("#photoInput").value = "";
   uploadedImage = null;
   document.querySelector("#uploadTitle").textContent = "Upload your photo";
